@@ -177,7 +177,7 @@ describe('check_cep_subscription Tool', () => {
     const result = await handler({ customerId: 'C0123' }, {})
 
     assert.strictEqual(mockCheckCepSubscription.mock.callCount(), 1)
-    assert.match(result.content[0].text, /Permission denied\. Your account lacks/)
+    assert.match(result.content[0].text, /Permission denied\. The authenticated principal/)
     assert.match(result.content[0].text, /auth login/)
   })
 })

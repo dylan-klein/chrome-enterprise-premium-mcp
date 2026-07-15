@@ -346,7 +346,7 @@ describe('Admin SDK API', () => {
       const result = await handler({ userId: 'user@example.com' }, {})
 
       assert.strictEqual(mockCheckUserCepLicense.mock.callCount(), 1)
-      assert.match(result.content[0].text, /Permission denied\. Your account lacks/)
+      assert.match(result.content[0].text, /Permission denied\. The authenticated principal/)
       assert.match(result.content[0].text, /auth login/)
     })
   })
