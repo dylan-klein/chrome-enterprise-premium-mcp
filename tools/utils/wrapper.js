@@ -173,11 +173,11 @@ function getAuthenticatedPrincipalInfo(authToken) {
   if (saEmail && isImpersonating) {
     display = `Service Account \`${saEmail}\` (impersonating \`${impersonatedEmail}\`)`
   } else if (saEmail) {
-    display = `Service Account \`${saEmail}\` (without user impersonation)`
+    display = `Service Account \`${saEmail}\``
   } else if (isImpersonating) {
     display = `impersonated Workspace user \`${impersonatedEmail}\``
   } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-    display = `the authenticated Service Account (without user impersonation)`
+    display = `the authenticated Service Account`
   }
 
   return { saEmail, impersonatedEmail, isImpersonating, display }
