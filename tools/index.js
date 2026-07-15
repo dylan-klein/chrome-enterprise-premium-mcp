@@ -63,6 +63,21 @@ import { featureFlags, FLAGS } from '../lib/util/feature_flags.js'
  * @param {object} [sessionState] - The session state object for caching.
  */
 export function registerTools(server, options = {}, sessionState) {
+  if (server && typeof server.registerTool === 'function' && !server._hasToolNameInterceptor) {
+    const originalRegisterTool = server.registerTool.bind(server)
+    const interceptor = (name, schema, handler) => {
+      if (typeof handler === 'function') {
+        handler._toolName = name
+      }
+      return originalRegisterTool(name, schema, handler)
+    }
+    if (server.registerTool.mock) {
+      interceptor.mock = server.registerTool.mock
+    }
+    server.registerTool = interceptor
+    server._hasToolNameInterceptor = true
+  }
+
   if (options.apiOptions && !options.apiOptions.onStatusUpdate) {
     options.apiOptions.onStatusUpdate = msg => {
       try {

@@ -104,6 +104,26 @@ const TOOL_PRIVILEGES_MAP = {
     privilege: 'Services > Cloud Identity > Security > View / Manage Data Loss Prevention (DLP) rules and detectors',
     roleUrl: 'https://admin.google.com/ac/roles',
   },
+  create_url_list_detector: {
+    privilege: 'Services > Cloud Identity > Security > View / Manage Data Loss Prevention (DLP) rules and detectors',
+    roleUrl: 'https://admin.google.com/ac/roles',
+  },
+  create_word_list_detector: {
+    privilege: 'Services > Cloud Identity > Security > View / Manage Data Loss Prevention (DLP) rules and detectors',
+    roleUrl: 'https://admin.google.com/ac/roles',
+  },
+  create_default_dlp_rules: {
+    privilege: 'Services > Cloud Identity > Security > View / Manage Data Loss Prevention (DLP) rules and detectors',
+    roleUrl: 'https://admin.google.com/ac/roles',
+  },
+  delete_agent_dlp_rule: {
+    privilege: 'Services > Cloud Identity > Security > View / Manage Data Loss Prevention (DLP) rules and detectors',
+    roleUrl: 'https://admin.google.com/ac/roles',
+  },
+  delete_detector: {
+    privilege: 'Services > Cloud Identity > Security > View / Manage Data Loss Prevention (DLP) rules and detectors',
+    roleUrl: 'https://admin.google.com/ac/roles',
+  },
 }
 
 /**
@@ -111,12 +131,20 @@ const TOOL_PRIVILEGES_MAP = {
  * @param {number} status - HTTP status code (401 or 403)
  * @param {boolean} bearerInbound - True if request used inbound Bearer auth
  * @param {string} [toolName] - Name of the tool being executed
+ * @param {boolean} [requiresDelegation] - Whether the tool requires domain-wide delegation
  * @returns {string} Human-readable remediation instructions
  */
-function getAuthRemediationMessage(status, bearerInbound = false, toolName = '') {
+function getAuthRemediationMessage(status, bearerInbound = false, toolName = '', requiresDelegation = false) {
   if (status === 403 && toolName && TOOL_PRIVILEGES_MAP[toolName]) {
     const info = TOOL_PRIVILEGES_MAP[toolName]
-    return `Permission denied (403 Forbidden) while calling \`${toolName}\`. Your account lacks the required Google Workspace Admin Console privilege:\n• **${info.privilege}**\n\n**To fix:** Open [Workspace Admin Roles](${info.roleUrl}) and assign any role (or custom role) granting this privilege to your account (e.g., *Delegated Admin* or *Super Admin*).`
+    const dwdNote = requiresDelegation
+      ? `\n• **Domain-Wide Delegation Required:** \`${toolName}\` requires user impersonation (Option 1) to access user-scoped directory/licensing/DLP data. If you are connecting without user impersonation (Direct Option 2), switch to **Domain-Wide Delegation** and enter a Workspace admin email.`
+      : ''
+    return `Permission denied. Your account lacks the required Google Workspace Admin Console permissions or delegation for \`${toolName}\` (403 Forbidden):\n• **Required Privilege:** ${info.privilege}${dwdNote}\n\n**To fix:** Open [Workspace Admin Roles](${info.roleUrl}) and assign any role (or custom role) granting this privilege to your account (e.g., *Delegated Admin* or *Super Admin*). If you are testing locally with user credentials, run \`gcloud auth login\` with an account that has these privileges.`
+  }
+
+  if (requiresDelegation && status === 403) {
+    return `Permission denied. Your account lacks the required Domain-Wide Delegation (user impersonation) for \`${toolName}\` (403 Forbidden). This tool requires user impersonation to access user-scoped directory or policy data (such as Cloud Identity DLP rules or Workspace Licensing).\n\n**To fix:** If you are connecting via an MCP client (such as Pocket CEP), switch your Authentication Mode to **Domain-Wide Delegation** and enter a valid Google Workspace admin email to impersonate. If you are testing locally in the CLI, run \`gcloud auth login\` with an admin account.`
   }
 
   if (bearerInbound) {
@@ -221,6 +249,7 @@ export function safeFormatResponse({ rawData, formatFn, toolName }) {
  * @param {boolean} [toolDef.skipAuthCheck] - Whether to skip checking if tokens are valid.
  * @param {boolean} [toolDef.requiresDelegation] - Whether this tool requires domain-wide delegation in SA mode.
  * @param {string[]} [toolDef.scopes] - Scopes required for this tool. Defaults to all SCOPES.
+ * @param {string} [toolDef.toolName] - Optional explicit tool name for error logging and remediation mapping.
  * @param {object} options - Configuration options for the wrapper
  * @param {object} [options.apiClients] - Collection of API clients
  * @param {object} [options.apiOptions] - Additional API options
@@ -237,11 +266,13 @@ export function guardedToolCall(
     skipAuthCheck = false,
     requiresDelegation = false,
     scopes = getActiveScopes(),
+    toolName = '',
   },
   options = {},
   sessionState = { customerId: null, cachedRootOrgUnitId: null },
 ) {
   const wrapped = async (params, context) => {
+    const activeToolName = wrapped._toolName || toolName || context?.name || ''
     const authToken = params?.accessToken || getAuthToken(context?.requestInfo)
     const isServiceAccountMode = !!process.env.GOOGLE_APPLICATION_CREDENTIALS
 
@@ -370,7 +401,12 @@ export function guardedToolCall(
             ? 401
             : 403)
         const bearerInbound = !!context?.authToken || !!context?.requestInfo?.headers?.authorization
-        const remediationMessage = getAuthRemediationMessage(resolvedStatus, bearerInbound, context?.name)
+        const remediationMessage = getAuthRemediationMessage(
+          resolvedStatus,
+          bearerInbound,
+          activeToolName,
+          requiresDelegation,
+        )
         return {
           content: [{ type: 'text', text: remediationMessage }],
           isError: true,
