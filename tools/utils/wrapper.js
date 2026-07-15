@@ -199,7 +199,7 @@ function getAuthRemediationMessage(
   requiresDelegation = false,
   authToken = '',
 ) {
-  const { saEmail, impersonatedEmail, isImpersonating, display } = getAuthenticatedPrincipalInfo(authToken)
+  const { saEmail, impersonatedEmail, isImpersonating } = getAuthenticatedPrincipalInfo(authToken)
   const isServiceAccountPrincipal = !!process.env.GOOGLE_APPLICATION_CREDENTIALS || !!saEmail
 
   if (requiresDelegation && status === 403 && isServiceAccountPrincipal && !isImpersonating) {
@@ -216,7 +216,14 @@ function getAuthRemediationMessage(
       : saEmail
         ? `Service Account \`${saEmail}\``
         : 'your account'
-    return `Permission denied. ${display.charAt(0).toUpperCase() + display.slice(1)} lacks the required Google Workspace Admin Console privilege for \`${toolName}\` (403 Forbidden):\n• **Required Privilege:** ${info.privilege}\n\n**To fix:** Open [Workspace Admin Roles](${info.roleUrl}) and assign any role (or custom role) granting this privilege to ${targetEntity}. If you are testing locally with user credentials, run \`gcloud auth login\` with an account that has these privileges.`
+    const whoLacks = isImpersonating
+      ? impersonatedEmail
+        ? `Impersonated Workspace user \`${impersonatedEmail}\``
+        : 'The impersonated Workspace user'
+      : saEmail
+        ? `Service Account \`${saEmail}\``
+        : 'The authenticated principal'
+    return `Permission denied. ${whoLacks} lacks the required Google Workspace Admin Console privilege for \`${toolName}\` (403 Forbidden):\n• **Required Privilege:** ${info.privilege}\n\n**To fix:** Open [Workspace Admin Roles](${info.roleUrl}) and assign any role (or custom role) granting this privilege to ${targetEntity}. If you are testing locally with user credentials, run \`gcloud auth login\` with an account that has these privileges.`
   }
 
   if (requiresDelegation && status === 403) {
