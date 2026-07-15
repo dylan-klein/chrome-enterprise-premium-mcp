@@ -18,6 +18,7 @@ limitations under the License.
  * @file Wrapper utilities to guard and transform MCP tool calls.
  */
 
+import fs from 'node:fs'
 import { TAGS } from '../../lib/constants.js'
 import { getActiveScopes } from '../../lib/util/feature_flags.js'
 import { logger } from '../../lib/util/logger.js'
@@ -127,24 +128,97 @@ const TOOL_PRIVILEGES_MAP = {
 }
 
 /**
+ * Extracts and formats the currently authenticated principal string for precise error reporting.
+ * @param {string} [authToken] - Optional OAuth or JWT token
+ * @returns {{saEmail: string|null, impersonatedEmail: string|null, isImpersonating: boolean, display: string}} Principal identity info
+ */
+function getAuthenticatedPrincipalInfo(authToken) {
+  let saEmail = null
+  let impersonatedEmail = process.env.CEP_IMPERSONATE_SUBJECT || null
+
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    try {
+      const keyData = JSON.parse(fs.readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, 'utf8'))
+      if (keyData?.client_email) {
+        saEmail = keyData.client_email
+      }
+    } catch {
+      // ignore read/parse failure
+    }
+  }
+
+  if (authToken && typeof authToken === 'string' && authToken.split('.').length === 3) {
+    try {
+      const payload = JSON.parse(Buffer.from(authToken.split('.')[1], 'base64url').toString())
+      if (payload?.client_email) {
+        saEmail = payload.client_email
+      } else if (payload?.iss && payload.iss.includes('.gserviceaccount.com')) {
+        saEmail = payload.iss
+      }
+      if (
+        payload?.sub &&
+        payload?.sub !== payload?.iss &&
+        payload.sub.includes('@') &&
+        !payload.sub.includes('.gserviceaccount.com')
+      ) {
+        impersonatedEmail = payload.sub
+      }
+    } catch {
+      // ignore jwt decode failure
+    }
+  }
+
+  const isImpersonating = !!impersonatedEmail
+  let display = 'the authenticated principal'
+  if (saEmail && isImpersonating) {
+    display = `Service Account \`${saEmail}\` (impersonating \`${impersonatedEmail}\`)`
+  } else if (saEmail) {
+    display = `Service Account \`${saEmail}\` (without user impersonation)`
+  } else if (isImpersonating) {
+    display = `impersonated Workspace user \`${impersonatedEmail}\``
+  } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    display = `the authenticated Service Account (without user impersonation)`
+  }
+
+  return { saEmail, impersonatedEmail, isImpersonating, display }
+}
+
+/**
  * Generates a proactive remediation message for authentication errors.
  * @param {number} status - HTTP status code (401 or 403)
  * @param {boolean} bearerInbound - True if request used inbound Bearer auth
  * @param {string} [toolName] - Name of the tool being executed
  * @param {boolean} [requiresDelegation] - Whether the tool requires domain-wide delegation
+ * @param {string} [authToken] - The active OAuth/Bearer token for identity inspection
  * @returns {string} Human-readable remediation instructions
  */
-function getAuthRemediationMessage(status, bearerInbound = false, toolName = '', requiresDelegation = false) {
+function getAuthRemediationMessage(
+  status,
+  bearerInbound = false,
+  toolName = '',
+  requiresDelegation = false,
+  authToken = '',
+) {
   if (status === 403 && toolName && TOOL_PRIVILEGES_MAP[toolName]) {
     const info = TOOL_PRIVILEGES_MAP[toolName]
+    const { saEmail, impersonatedEmail, isImpersonating, display } = getAuthenticatedPrincipalInfo(authToken)
+    const targetEntity = isImpersonating
+      ? impersonatedEmail
+        ? `impersonated user \`${impersonatedEmail}\``
+        : 'the impersonated Workspace user'
+      : saEmail
+        ? `Service Account \`${saEmail}\``
+        : 'your Service Account'
     const dwdNote = requiresDelegation
       ? `\n• **Domain-Wide Delegation Required:** \`${toolName}\` requires user impersonation (Option 1) to access user-scoped directory/licensing/DLP data. If you are connecting without user impersonation (Direct Option 2), switch to **Domain-Wide Delegation** and enter a Workspace admin email.`
       : ''
-    return `Permission denied. The authenticated principal (Service Account or impersonated admin) lacks the required Google Workspace Admin Console permissions or delegation for \`${toolName}\` (403 Forbidden):\n• **Required Privilege:** ${info.privilege}${dwdNote}\n\n**To fix:** Open [Workspace Admin Roles](${info.roleUrl}) and assign any role (or custom role) granting this privilege to your Service Account (or to the impersonated Workspace admin email). If you are testing locally with user credentials, run \`gcloud auth login\` with an account that has these privileges.`
+    return `Permission denied. ${display.charAt(0).toUpperCase() + display.slice(1)} lacks the required Google Workspace Admin Console permissions or delegation for \`${toolName}\` (403 Forbidden):\n• **Required Privilege:** ${info.privilege}${dwdNote}\n\n**To fix:** Open [Workspace Admin Roles](${info.roleUrl}) and assign any role (or custom role) granting this privilege to ${targetEntity}. If you are testing locally with user credentials, run \`gcloud auth login\` with an account that has these privileges.`
   }
 
   if (requiresDelegation && status === 403) {
-    return `Permission denied. The authenticated Service Account lacks the required Domain-Wide Delegation (user impersonation) for \`${toolName}\` (403 Forbidden). This tool requires user impersonation to access user-scoped directory or policy data (such as Cloud Identity DLP rules or Workspace Licensing).\n\n**To fix:** If you are connecting via an MCP client (such as Pocket CEP), switch your Authentication Mode to **Domain-Wide Delegation** and enter a valid Google Workspace admin email to impersonate. Direct Service Account role assignments without user impersonation do not work for this tool. If you are testing locally in the CLI, run \`gcloud auth login\` with an admin account.`
+    const { saEmail, display } = getAuthenticatedPrincipalInfo(authToken)
+    const saLabel = saEmail ? `Service Account \`${saEmail}\`` : 'the authenticated Service Account'
+    return `Permission denied. ${display.charAt(0).toUpperCase() + display.slice(1)} lacks the required Domain-Wide Delegation (user impersonation) for \`${toolName}\` (403 Forbidden). This tool requires user impersonation to access user-scoped directory or policy data (such as Cloud Identity DLP rules or Workspace Licensing).\n\n**To fix:** If you are connecting via an MCP client (such as Pocket CEP), switch your Authentication Mode to **Domain-Wide Delegation** and enter a valid Google Workspace admin email to impersonate. Direct role assignments to ${saLabel} without user impersonation do not work for this tool. If you are testing locally in the CLI, run \`gcloud auth login\` with an admin account.`
   }
 
   if (bearerInbound) {
@@ -406,6 +480,7 @@ export function guardedToolCall(
           bearerInbound,
           activeToolName,
           requiresDelegation,
+          context?.authToken || params?.accessToken || getAuthToken(context?.requestInfo),
         )
         return {
           content: [{ type: 'text', text: remediationMessage }],
