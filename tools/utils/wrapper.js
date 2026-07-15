@@ -204,7 +204,10 @@ function getAuthRemediationMessage(
 
   if (requiresDelegation && status === 403 && isServiceAccountPrincipal && !isImpersonating) {
     const saLabel = saEmail ? `Service Account \`${saEmail}\`` : 'the authenticated Service Account'
-    return `Permission denied (403 Forbidden) while calling \`${toolName}\`. ${saLabel} lacks the required Domain-Wide Delegation (user impersonation).\n\n• **Why this failed:** \`${toolName}\` requires user impersonation to access user-scoped directory or policy data (such as Cloud Identity DLP rules or Workspace Licensing). Direct Service Account role assignments without user impersonation do not work for this tool.\n\n**To fix:** If you are connecting via an MCP client (such as Pocket CEP), switch your Authentication Mode to **Domain-Wide Delegation** and enter a valid Google Workspace admin email to impersonate. If you are testing locally in the CLI, run \`gcloud auth login\` with an admin account.`
+    const fixPath = bearerInbound
+      ? 'Switch your client Authentication Mode from **Direct Role Assignment** to **Domain-Wide Delegation (Option 1)** and enter a valid Google Workspace admin email to impersonate.'
+      : 'Set the environment variable `CEP_IMPERSONATE_SUBJECT=admin@company.com` (the email of a Google Workspace admin with delegated privileges) and restart the MCP server. Do not run interactive login commands (`gcloud auth login` or `cep_auth`) when `GOOGLE_APPLICATION_CREDENTIALS` is configured.'
+    return `Permission denied (403 Forbidden) while calling \`${toolName}\`. ${saLabel} lacks the required Domain-Wide Delegation (user impersonation).\n\n• **Why this failed:** \`${toolName}\` requires user impersonation to access user-scoped directory or policy data (such as Cloud Identity DLP rules or Workspace Licensing). Direct Service Account role assignments without user impersonation do not work for this tool.\n\n**To fix:** ${fixPath}`
   }
 
   if (status === 403 && toolName && TOOL_PRIVILEGES_MAP[toolName]) {
@@ -215,7 +218,7 @@ function getAuthRemediationMessage(
         : 'the impersonated Workspace user'
       : saEmail
         ? `Service Account \`${saEmail}\``
-        : 'your account'
+        : 'your user account'
     const whoLacks = isImpersonating
       ? impersonatedEmail
         ? `Impersonated Workspace user \`${impersonatedEmail}\``
@@ -223,29 +226,34 @@ function getAuthRemediationMessage(
       : saEmail
         ? `Service Account \`${saEmail}\``
         : 'The authenticated principal'
-    return `Permission denied. ${whoLacks} lacks the required Google Workspace Admin Console privilege for \`${toolName}\` (403 Forbidden):\n• **Required Privilege:** ${info.privilege}\n\n**To fix:** Open [Workspace Admin Roles](${info.roleUrl}) and assign any role (or custom role) granting this privilege to ${targetEntity}. If you are testing locally with user credentials, run \`gcloud auth login\` with an account that has these privileges.`
+    const cliNote =
+      !bearerInbound && !isServiceAccountPrincipal
+        ? ` If you are testing locally with user credentials, run \`gcloud auth login\` with an account that has these privileges.`
+        : ''
+    return `Permission denied. ${whoLacks} lacks the required Google Workspace Admin Console privilege for \`${toolName}\` (403 Forbidden):\n• **Required Privilege:** ${info.privilege}\n\n**To fix:** Open [Workspace Admin Roles](${info.roleUrl}) and assign any role (or custom role) granting this privilege directly to ${targetEntity}.${cliNote}`
   }
 
   if (requiresDelegation && status === 403) {
-    return `Permission denied (403 Forbidden) while calling \`${toolName}\`. This tool requires **Domain-Wide Delegation (user impersonation)** to access user-scoped directory or policy data.\n\n**To fix:** Switch your Authentication Mode to **Domain-Wide Delegation** and enter a valid Google Workspace admin email to impersonate. If you are testing locally in the CLI, run \`gcloud auth login\` with an admin account.`
+    const fixPath = bearerInbound
+      ? 'Switch your client Authentication Mode to **Domain-Wide Delegation** and enter a valid Google Workspace admin email to impersonate.'
+      : isServiceAccountPrincipal
+        ? 'Set `CEP_IMPERSONATE_SUBJECT=admin@company.com` in your environment and restart the server. Do not run interactive login commands.'
+        : 'Run `gcloud auth login` with a Google Workspace admin user account that has access to user-scoped directory/licensing/DLP data.'
+    return `Permission denied (403 Forbidden) while calling \`${toolName}\`. This tool requires **Domain-Wide Delegation (user impersonation)** to access user-scoped directory or policy data.\n\n**To fix:** ${fixPath}`
   }
 
   if (bearerInbound) {
     if (status === 401) {
       return `Authentication required. The inbound Bearer token has expired or is invalid. Re-authenticate through your MCP client to refresh the token.`
     }
-    return `Permission denied. The authenticated principal lacks the required permissions, or the necessary Google Cloud APIs are not enabled.
-
-1. **Re-authenticate:** Refresh the inbound Bearer token through your MCP client.
-2. **Verify APIs are enabled:** Run the \`check_and_enable_cep_api\` tool against your project, or enable the API set listed in \`lib/constants.js#SERVICE_NAMES\`.`
+    return `Permission denied. The authenticated principal lacks the required permissions, or the necessary Google Cloud APIs are not enabled.\n\n1. **Re-authenticate:** Refresh the inbound Bearer token through your MCP client.\n2. **Verify APIs are enabled:** Run the \`check_and_enable_cep_api\` tool against your project, or enable the API set listed in \`lib/constants.js#SERVICE_NAMES\`.`
   }
 
-  const isSaMode = !!process.env.GOOGLE_APPLICATION_CREDENTIALS
-  if (isSaMode) {
+  if (isServiceAccountPrincipal) {
     if (status === 401) {
-      return `Authentication required. The Service Account credentials configured in GOOGLE_APPLICATION_CREDENTIALS are invalid or domain-wide delegation failed. Ensure the Service Account JSON key is valid and domain-wide delegation (CEP_IMPERSONATE_SUBJECT) is configured in Google Workspace Admin Console.`
+      return `Authentication required. The Service Account credentials configured in GOOGLE_APPLICATION_CREDENTIALS are invalid or domain-wide delegation failed. Ensure the Service Account JSON key is valid and domain-wide delegation (CEP_IMPERSONATE_SUBJECT) is configured in Google Workspace Admin Console. Do not run interactive login commands.`
     }
-    return `Permission denied. The Service Account lacks required Google Workspace / Chrome Enterprise permissions or domain-wide delegation OAuth scopes. Verify that the Service Account has required IAM roles and that Domain-Wide Delegation in Google Workspace Admin Console includes the necessary scopes.`
+    return `Permission denied. The Service Account lacks required Google Workspace / Chrome Enterprise permissions or domain-wide delegation OAuth scopes. Verify that the Service Account has required IAM roles and that Domain-Wide Delegation in Google Workspace Admin Console includes the necessary scopes. Do not run interactive login commands.`
   }
 
   const manualLogin = cliInvocation('auth login')
@@ -253,11 +261,7 @@ function getAuthRemediationMessage(
     return `Authentication required. Run the \`cep_auth\` tool to sign in, or run \`${manualLogin}\` at the shell to authorize the server (it caches the access token at ~/.config/cep-mcp/tokens.json). To use a service account, set GOOGLE_APPLICATION_CREDENTIALS to a service-account key file.`
   }
 
-  return `Permission denied. Your account lacks the required permissions or the necessary Google Cloud APIs are not enabled.
-
-1. **Re-authenticate with all required scopes:** Run the \`cep_auth\` tool, or run \`${manualLogin}\` at the shell, to re-consent. The required scope set is defined in lib/constants.js#SCOPES.
-2. **Verify APIs are enabled:** Run the \`check_and_enable_cep_api\` tool against your project, or enable the API set listed in lib/constants.js#SERVICE_NAMES.
-`
+  return `Permission denied. Your user account lacks the required permissions or the necessary Google Cloud APIs are not enabled.\n\n1. **Re-authenticate with all required scopes:** Run the \`cep_auth\` tool, or run \`${manualLogin}\` at the shell, to re-consent. The required scope set is defined in lib/constants.js#SCOPES.\n2. **Verify APIs are enabled:** Run the \`check_and_enable_cep_api\` tool against your project, or enable the API set listed in lib/constants.js#SERVICE_NAMES.\n`
 }
 
 /**
@@ -365,7 +369,8 @@ export function guardedToolCall(
         'You are authenticated in Service Account mode (GOOGLE_APPLICATION_CREDENTIALS is set), but CEP_IMPERSONATE_SUBJECT is not specified. ' +
         'To use this tool, set CEP_IMPERSONATE_SUBJECT to the email address of a Google Workspace user account with delegated privileges (Option 1). ' +
         'Alternatively, if you are using direct Admin Console role assignments without user impersonation (Option 2), ' +
-        'use Option 2 compatible tools such as list_org_units, security_insights, or count_browser_versions with an explicit customerId.'
+        'use Option 2 compatible tools such as list_org_units, security_insights, or count_browser_versions with an explicit customerId. ' +
+        'Do not run interactive login commands like gcloud auth login when GOOGLE_APPLICATION_CREDENTIALS is set.'
       return {
         content: [{ type: 'text', text }],
         isError: true,
