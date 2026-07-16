@@ -278,6 +278,53 @@ describe('Auth', () => {
         }
       }
     })
+
+    test('When running in SA mode and calling a tool with requiresDelegation=true that throws 400 Invalid Customer Id without impersonation, then guardedToolCall returns DWD remediation', async () => {
+      const { guardedToolCall } = await import('../../tools/utils/wrapper.js')
+      const prevCred = process.env.GOOGLE_APPLICATION_CREDENTIALS
+      const prevSub = process.env.CEP_IMPERSONATE_SUBJECT
+      process.env.GOOGLE_APPLICATION_CREDENTIALS = '/tmp/fake-key.json'
+      delete process.env.CEP_IMPERSONATE_SUBJECT
+      try {
+        const wrapped = guardedToolCall(
+          {
+            requiresDelegation: true,
+            skipAutoResolve: true,
+            handler: async () => {
+              const err = new Error('API Error 400 (unknown): Invalid Customer Id - {}')
+              err.status = 400
+              throw err
+            },
+          },
+          {},
+          {},
+        )
+        // Pass a dummy token in params/context so it runs the handler where the 400 error is thrown
+        const result = await wrapped(
+          { accessToken: 'mock_bearer_token_direct_sa' },
+          { requestInfo: { headers: { authorization: 'Bearer mock_bearer_token_direct_sa' } } },
+        )
+        assert.strictEqual(result.isError, true)
+        assert.match(result.content[0].text, /Permission\/Delegation error \(400 Bad Request \/ Invalid Customer Id\)/i)
+        assert.match(
+          result.content[0].text,
+          /Switch your client Authentication Mode from \*\*Direct Role Assignment\*\* to \*\*Domain-Wide Delegation/i,
+        )
+      } finally {
+        if (prevCred === undefined) {
+          delete process.env.GOOGLE_APPLICATION_CREDENTIALS
+        } else {
+          // eslint-disable-next-line require-atomic-updates
+          process.env.GOOGLE_APPLICATION_CREDENTIALS = prevCred
+        }
+        if (prevSub === undefined) {
+          delete process.env.CEP_IMPERSONATE_SUBJECT
+        } else {
+          // eslint-disable-next-line require-atomic-updates
+          process.env.CEP_IMPERSONATE_SUBJECT = prevSub
+        }
+      }
+    })
   })
 
   describe('Step 2 mode-aware error remediation', () => {

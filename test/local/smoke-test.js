@@ -29,8 +29,9 @@ import { logger } from '../../lib/util/logger.js'
 // so the grounding-content check would give a false negative over HTTP.
 await runStdioInitializeTest()
 
+let dynamicPort = 0
 const server = spawn('node', ['mcp-server.js'], {
-  env: { ...process.env, GOOGLE_API_ROOT_URL: 'http://localhost:1234', PORT: '3000' },
+  env: { ...process.env, GOOGLE_API_ROOT_URL: 'http://localhost:1234', PORT: '0' },
 })
 
 async function runStdioInitializeTest() {
@@ -97,7 +98,7 @@ function runToolTest() {
 
   const options = {
     hostname: 'localhost',
-    port: 3000,
+    port: dynamicPort,
     path: '/mcp',
     method: 'POST',
     headers: {
@@ -150,7 +151,7 @@ function runPromptTest() {
 
   const options = {
     hostname: 'localhost',
-    port: 3000,
+    port: dynamicPort,
     path: '/mcp',
     method: 'POST',
     headers: {
@@ -203,7 +204,7 @@ function runResourceTest() {
 
   const options = {
     hostname: 'localhost',
-    port: 3000,
+    port: dynamicPort,
     path: '/mcp',
     method: 'POST',
     headers: {
@@ -241,7 +242,9 @@ function runResourceTest() {
 
 server.stdout.on('data', data => {
   logger.info(`server: ${data}`)
-  if (data.includes('Chrome Enterprise Premium MCP server listening on port')) {
+  const match = data.toString().match(/listening on port (\d+)/)
+  if (match) {
+    dynamicPort = Number(match[1])
     runToolTest()
   }
 })

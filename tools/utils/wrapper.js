@@ -202,12 +202,14 @@ function getAuthRemediationMessage(
   const { saEmail, impersonatedEmail, isImpersonating } = getAuthenticatedPrincipalInfo(authToken)
   const isServiceAccountPrincipal = !!process.env.GOOGLE_APPLICATION_CREDENTIALS || !!saEmail
 
-  if (requiresDelegation && status === 403 && isServiceAccountPrincipal && !isImpersonating) {
+  if (requiresDelegation && (status === 403 || status === 400) && isServiceAccountPrincipal && !isImpersonating) {
     const saLabel = saEmail ? `Service Account \`${saEmail}\`` : 'the authenticated Service Account'
     const fixPath = bearerInbound
       ? 'Switch your client Authentication Mode from **Direct Role Assignment** to **Domain-Wide Delegation (Option 1)** and enter a valid Google Workspace admin email to impersonate.'
       : 'Set the environment variable `CEP_IMPERSONATE_SUBJECT=admin@company.com` (the email of a Google Workspace admin with delegated privileges) and restart the MCP server. Do not run interactive login commands (`gcloud auth login` or `cep_auth`) when `GOOGLE_APPLICATION_CREDENTIALS` is configured.'
-    return `Permission denied (403 Forbidden) while calling \`${toolName}\`. ${saLabel} lacks the required Domain-Wide Delegation (user impersonation).\n\n• **Why this failed:** \`${toolName}\` requires user impersonation to access user-scoped directory or policy data (such as Cloud Identity DLP rules or Workspace Licensing). Direct Service Account role assignments without user impersonation do not work for this tool.\n\n**To fix:** ${fixPath}`
+    const statusText = status === 400 ? '400 Bad Request / Invalid Customer Id' : '403 Forbidden'
+    const dwdLink = '[Google Workspace Domain-Wide Delegation](https://admin.google.com/ac/owl/domainwidedelegation)'
+    return `Permission/Delegation error (${statusText}) while calling \`${toolName}\`. ${saLabel} lacks the required Domain-Wide Delegation (user impersonation).\n\n• **Why this failed:** \`${toolName}\` requires user impersonation to access user-scoped directory or policy data (such as Cloud Identity DLP rules or Workspace Licensing). Direct Service Account role assignments without user impersonation do not work for this tool.\n\n**To fix:** ${fixPath} Ensure the Service Account Client ID and required OAuth scopes are authorized in ${dwdLink}.`
   }
 
   if (status === 403 && toolName && TOOL_PRIVILEGES_MAP[toolName]) {
@@ -474,6 +476,7 @@ export function guardedToolCall(
       const isAuthError =
         status === 401 ||
         status === 403 ||
+        (requiresDelegation && (status === 400 || errorMessage.includes('Invalid Customer Id'))) ||
         errorMessage.includes('API Error 401') ||
         errorMessage.includes('API Error 403') ||
         errorMessage.includes('UNAUTHENTICATED') ||
@@ -487,7 +490,9 @@ export function guardedToolCall(
           errorMessage.includes('UNAUTHENTICATED') ||
           errorMessage.includes('invalid_grant')
             ? 401
-            : 403)
+            : status === 400 || errorMessage.includes('Invalid Customer Id')
+              ? 400
+              : 403)
         const bearerInbound = !!context?.authToken || !!context?.requestInfo?.headers?.authorization
         const remediationMessage = getAuthRemediationMessage(
           resolvedStatus,
