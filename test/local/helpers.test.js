@@ -116,4 +116,49 @@ describe('Helpers', () => {
       }
     })
   })
+
+  describe('handleApiError', () => {
+    test('When error.response.data.error is an object, then it preserves status and code on the thrown Error', async () => {
+      const { handleApiError } = await import('../../lib/util/helpers.js')
+      const apiErr = {
+        response: {
+          data: {
+            error: {
+              code: 403,
+              status: 'PERMISSION_DENIED',
+              message: 'Impersonated user lacks Admin Console privileges',
+            },
+          },
+        },
+      }
+      assert.throws(
+        () => handleApiError(apiErr, '[test]', 'operation'),
+        err => {
+          assert.strictEqual(err.status, 403)
+          assert.strictEqual(err.code, 403)
+          return true
+        },
+      )
+    })
+
+    test('When error.response.data.error is a string, then it preserves status from response.status', async () => {
+      const { handleApiError } = await import('../../lib/util/helpers.js')
+      const apiErr = {
+        response: {
+          status: 400,
+          data: {
+            error: 'invalid_grant',
+            error_description: 'Bad Request',
+          },
+        },
+      }
+      assert.throws(
+        () => handleApiError(apiErr, '[test]', 'operation'),
+        err => {
+          assert.strictEqual(err.status, 400)
+          return true
+        },
+      )
+    })
+  })
 })
