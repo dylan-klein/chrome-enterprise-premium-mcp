@@ -190,6 +190,7 @@ function getAuthenticatedPrincipalInfo(authToken) {
  * @param {string} [toolName] - Name of the tool being executed
  * @param {boolean} [requiresDelegation] - Whether the tool requires domain-wide delegation
  * @param {string} [authToken] - The active OAuth/Bearer token for identity inspection
+ * @param {string} [errorMessage] - Optional error message text for inspection
  * @returns {string} Human-readable remediation instructions
  */
 function getAuthRemediationMessage(
@@ -198,6 +199,7 @@ function getAuthRemediationMessage(
   toolName = '',
   requiresDelegation = false,
   authToken = '',
+  errorMessage = '',
 ) {
   const { saEmail, impersonatedEmail, isImpersonating } = getAuthenticatedPrincipalInfo(authToken)
   const isServiceAccountPrincipal = !!process.env.GOOGLE_APPLICATION_CREDENTIALS || !!saEmail
@@ -210,6 +212,15 @@ function getAuthRemediationMessage(
     const statusText = status === 400 ? '400 Bad Request / Invalid Customer Id' : '403 Forbidden'
     const dwdLink = '[Google Workspace Domain-Wide Delegation](https://admin.google.com/ac/owl/domainwidedelegation)'
     return `Permission/Delegation error (${statusText}) while calling \`${toolName}\`. ${saLabel} lacks the required Domain-Wide Delegation (user impersonation).\n\n• **Why this failed:** \`${toolName}\` requires user impersonation to access user-scoped directory or policy data (such as Cloud Identity DLP rules or Workspace Licensing). Direct Service Account role assignments without user impersonation do not work for this tool.\n\n**To fix:** ${fixPath} Ensure the Service Account Client ID and required OAuth scopes are authorized in ${dwdLink}.`
+  }
+
+  if (
+    !requiresDelegation &&
+    (status === 400 || (errorMessage && errorMessage.includes('Invalid Customer Id'))) &&
+    isServiceAccountPrincipal &&
+    !isImpersonating
+  ) {
+    return `Could not auto-resolve customerId (\`my_customer\` requires Domain-Wide Delegation user impersonation). Because you are running in Direct Role Assignment mode without \`CEP_IMPERSONATE_SUBJECT\`, you must explicitly provide your \`customerId\` parameter (e.g., \`customerId: "C01234567"\`) when calling \`${toolName || 'this tool'}\`.`
   }
 
   if (status === 403 && toolName && TOOL_PRIVILEGES_MAP[toolName]) {
@@ -473,10 +484,18 @@ export function guardedToolCall(
       }
 
       const status = error.status || error.code || error.response?.status
+      const { saEmail, isImpersonating } = getAuthenticatedPrincipalInfo(
+        context?.authToken || params?.accessToken || getAuthToken(context?.requestInfo) || '',
+      )
+      const isServiceAccountPrincipal = !!process.env.GOOGLE_APPLICATION_CREDENTIALS || !!saEmail
       const isAuthError =
         status === 401 ||
         status === 403 ||
         (requiresDelegation && (status === 400 || errorMessage.includes('Invalid Customer Id'))) ||
+        (!requiresDelegation &&
+          isServiceAccountPrincipal &&
+          !isImpersonating &&
+          (status === 400 || errorMessage.includes('Invalid Customer Id'))) ||
         errorMessage.includes('API Error 401') ||
         errorMessage.includes('API Error 403') ||
         errorMessage.includes('UNAUTHENTICATED') ||
@@ -500,6 +519,7 @@ export function guardedToolCall(
           activeToolName,
           requiresDelegation,
           context?.authToken || params?.accessToken || getAuthToken(context?.requestInfo),
+          errorMessage,
         )
         return {
           content: [{ type: 'text', text: remediationMessage }],
