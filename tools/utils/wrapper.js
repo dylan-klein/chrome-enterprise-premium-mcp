@@ -132,7 +132,7 @@ const TOOL_PRIVILEGES_MAP = {
  * @param {string} [authToken] - Optional OAuth or JWT token
  * @returns {{saEmail: string|null, impersonatedEmail: string|null, isImpersonating: boolean, display: string}} Principal identity info
  */
-function getAuthenticatedPrincipalInfo(authToken) {
+export function getAuthenticatedPrincipalInfo(authToken) {
   let saEmail = null
   let impersonatedEmail = process.env.CEP_IMPERSONATE_SUBJECT || null
 

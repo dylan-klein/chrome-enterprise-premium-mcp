@@ -400,4 +400,36 @@ describe('Auth', () => {
       }
     })
   })
+
+  describe('Regime-aware auth tool guards in Service Account mode', () => {
+    test('When cep_auth_status and cep_auth_clear are called in Service Account mode, they report exact identity and refuse to clear machine keys', async () => {
+      const { registerAuthTools } = await import('../../tools/definitions/auth.js')
+      const tools = {}
+      const mockServer = {
+        registerTool(name, schema, handler) {
+          tools[name] = handler
+        },
+      }
+      registerAuthTools(mockServer, {}, {})
+
+      const prevCred = process.env.GOOGLE_APPLICATION_CREDENTIALS
+      process.env.GOOGLE_APPLICATION_CREDENTIALS = '/tmp/fake-sa-key.json'
+      try {
+        const statusRes = await tools.cep_auth_status({}, {})
+        assert.strictEqual(statusRes.isError, undefined)
+        assert.match(statusRes.content[0].text, /Authentication active via.*Service Account/i)
+
+        const clearRes = await tools.cep_auth_clear({}, {})
+        assert.strictEqual(clearRes.isError, undefined)
+        assert.match(clearRes.content[0].text, /Cannot clear credentials/i)
+      } finally {
+        if (prevCred === undefined) {
+          delete process.env.GOOGLE_APPLICATION_CREDENTIALS
+        } else {
+          // eslint-disable-next-line require-atomic-updates
+          process.env.GOOGLE_APPLICATION_CREDENTIALS = prevCred
+        }
+      }
+    })
+  })
 })

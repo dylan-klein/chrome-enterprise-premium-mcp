@@ -28,7 +28,7 @@ import { TokenCache } from '../../lib/util/credential/token_cache.js'
 import { oauthFlowCredential } from '../../lib/util/credential/oauth_flow.js'
 import { resolveOAuthClientConfig } from '../../lib/util/credential/oauth_client_config.js'
 import { TAGS, OAUTH_SCOPE_REGISTRY, getUniqueScopeCategories } from '../../lib/constants.js'
-import { guardedToolCall, formatToolResponse } from '../utils/wrapper.js'
+import { guardedToolCall, formatToolResponse, getAuthenticatedPrincipalInfo } from '../utils/wrapper.js'
 import { cliInvocation } from '../../lib/util/cli_invocation.js'
 import { getActiveScopes } from '../../lib/util/feature_flags.js'
 
@@ -209,6 +209,16 @@ export function registerAuthTools(server, options, sessionState) {
           isError: true,
         }
       }
+      if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+        const msg =
+          'This server is authenticating via a Service Account (GOOGLE_APPLICATION_CREDENTIALS), so interactive sign-in via cep_auth does not apply. ' +
+          'To use OAuth sign-in instead, unset GOOGLE_APPLICATION_CREDENTIALS or configure your authentication in the /sa-setup configuration page.'
+        return {
+          content: [{ type: 'text', text: msg }],
+          structuredContent: { status: 'error', code: 'SERVICE_ACCOUNT_ACTIVE', message: msg },
+          isError: true,
+        }
+      }
       try {
         if (redirectUrl !== undefined && redirectUrl !== '') {
           const result = await completeToolAuth({ redirectUrl })
@@ -244,7 +254,50 @@ export function registerAuthTools(server, options, sessionState) {
     },
     guardedToolCall(
       {
-        handler: async () => {
+        handler: async (params, context) => {
+          if (context?.requestInfo?.headers?.authorization) {
+            const { saEmail, impersonatedEmail, display } = getAuthenticatedPrincipalInfo(
+              context.requestInfo.headers.authorization.replace(/^Bearer\s+/i, ''),
+            )
+            const statusReport = {
+              ok: true,
+              source: 'bearer',
+              credentialType: 'bearer',
+              principal: display || saEmail || impersonatedEmail || 'Inbound Bearer token active',
+              scopesKnown: false,
+              missingScopes: [],
+              canLaunchBrowser: canLaunchBrowser(),
+              granted: [],
+              missing: [],
+            }
+            return formatToolResponse({
+              summary: `Authentication active via inbound Bearer token (${statusReport.principal}).`,
+              data: { status: statusReport },
+              structuredContent: { status: statusReport },
+            })
+          }
+          if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+            const { saEmail, impersonatedEmail, display } = getAuthenticatedPrincipalInfo()
+            const statusReport = {
+              ok: true,
+              source: 'service-account',
+              credentialType: 'service-account',
+              principal: saEmail
+                ? `${saEmail}${impersonatedEmail ? ` (impersonating ${impersonatedEmail})` : ''}`
+                : `Service Account (${process.env.GOOGLE_APPLICATION_CREDENTIALS})`,
+              scopesKnown: false,
+              missingScopes: [],
+              canLaunchBrowser: canLaunchBrowser(),
+              granted: [],
+              missing: [],
+            }
+            return formatToolResponse({
+              summary: `Authentication active via ${display || statusReport.principal}.`,
+              data: { status: statusReport },
+              structuredContent: { status: statusReport },
+            })
+          }
+
           const requiredScopes = getActiveScopes()
           const cred = oauthFlowCredential({ requiredScopes })
           const probe = await cred.probe()
@@ -284,7 +337,22 @@ export function registerAuthTools(server, options, sessionState) {
     },
     guardedToolCall(
       {
-        handler: async () => {
+        handler: async (params, context) => {
+          if (context?.requestInfo?.headers?.authorization) {
+            return formatToolResponse({
+              summary:
+                'Cannot clear credentials: server received an inbound Bearer token. Refresh or clear the token directly through your MCP client.',
+              data: { cleared: false },
+              structuredContent: { cleared: false },
+            })
+          }
+          if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+            return formatToolResponse({
+              summary: `Cannot clear credentials: server is authenticating via Service Account (${process.env.GOOGLE_APPLICATION_CREDENTIALS}). To change credentials, update GOOGLE_APPLICATION_CREDENTIALS or configure your identity in the /sa-setup configuration page.`,
+              data: { cleared: false },
+              structuredContent: { cleared: false },
+            })
+          }
           const cache = new TokenCache(TokenCache.defaultPath())
           await cache.clear()
           return formatToolResponse({
